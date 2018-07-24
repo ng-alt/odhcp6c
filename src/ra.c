@@ -75,7 +75,12 @@ int ra_init(const char *ifname, const struct in6_addr *ifid,
 	ra_holdoff_interval = holdoff_interval;
 
 	const pid_t ourpid = getpid();
+#ifdef SOCK_CLOEXEC
 	sock = socket(AF_INET6, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMPV6);
+#else
+	sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+	sock = fflags(sock, O_CLOEXEC);
+#endif
 	if (sock < 0)
 		return -1;
 
@@ -86,7 +91,12 @@ int ra_init(const char *ifname, const struct in6_addr *ifid,
 	strncpy(if_name, ifname, sizeof(if_name) - 1);
 	lladdr = *ifid;
 
+#ifdef SOCK_CLOEXEC
 	rtnl = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_ROUTE);
+#else
+	rtnl = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
+	rtnl = fflags(rtnl, O_CLOEXEC);
+#endif
 	if (rtnl < 0)
 		return -1;
 
@@ -338,17 +348,17 @@ bool ra_process(void)
 		if (!ra_icmpv6_valid(&from, hlim, buf, len))
 			continue;
 
-		// Stop sending solicits
-		if (rs_attempt > 0) {
-			alarm(0);
-			rs_attempt = 0;
-		}
-
 		if (!found) {
 			odhcp6c_expire();
 			found = true;
 		}
 		uint32_t router_valid = ntohs(adv->nd_ra_router_lifetime);
+
+		// Stop sending solicits
+		if (rs_attempt > 0 && router_valid) {
+			alarm(0);
+			rs_attempt = 0;
+		}
 
 		// Parse default route
 		entry->target = any;

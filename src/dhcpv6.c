@@ -128,7 +128,12 @@ int init_dhcpv6(const char *ifname, unsigned int options, int sol_timeout)
 	client_options = options;
 	dhcpv6_retx[DHCPV6_MSG_SOLICIT].max_timeo = sol_timeout;
 
+#ifdef SOCK_CLOEXEC
 	sock = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+#else
+	sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+	sock = fflags(sock, O_CLOEXEC);
+#endif
 	if (sock < 0)
 		return -1;
 
@@ -836,9 +841,11 @@ static int dhcpv6_handle_advert(enum dhcpv6_msg orig, const int rc,
 {
 	uint16_t olen, otype;
 	uint8_t *odata, pref = 0;
+	uint16_t code = DHCPV6_Success;
 	struct dhcpv6_server_cand cand = {false, false, 0, 0, {0},
 					IN6ADDR_ANY_INIT, DHCPV6_SOL_MAX_RT,
 					DHCPV6_INF_MAX_RT, NULL, NULL, 0, 0};
+	bool allowed = true;
 	bool have_na = false;
 	int have_pd = 0;
 
@@ -893,11 +900,15 @@ static int dhcpv6_handle_advert(enum dhcpv6_msg orig, const int rc,
 						olen >= -4 + sizeof(struct dhcpv6_ia_addr))
 					have_na = true;
 			}
-		}
+		} else if (otype == DHCPV6_OPT_STATUS && olen >= 2)
+			code = ((int)odata[0]) << 8 | ((int)odata[1]);
 	}
 
-	if ((!have_na && na_mode == IA_MODE_FORCE) ||
-			(!have_pd && pd_mode == IA_MODE_FORCE)) {
+	if (!have_na && na_mode == IA_MODE_FORCE)
+		allowed = false;
+	else if (!have_pd && pd_mode == IA_MODE_FORCE)
+		allowed = !have_na && na_mode == IA_MODE_TRY && code == DHCPV6_NoAddrsAvail;
+	if (!allowed) {
 		/*
 		 * RFC7083 states to process the SOL_MAX_RT and
 		 * INF_MAX_RT options even if the DHCPv6 server
